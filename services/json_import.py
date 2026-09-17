@@ -72,13 +72,22 @@ class JsonImportService:
 
             album = item.get("album", "")
 
+            duration = item.get("duration_ms", item.get("duration", 0))
+            if isinstance(duration, str):
+                try:
+                    duration = float(duration)
+                except ValueError:
+                    duration = 0
+            if duration and duration < 1000:
+                duration = int(duration * 1000)
+
             tracks.append(
                 Track(
                     artist=str(artist),
                     title=str(title),
                     album=str(album),
                     platform="json",
-                    duration_ms=int(item.get("duration_ms", 0)),
+                    duration_ms=int(duration),
                     source_playlist=playlist_name or f"JSON Import ({i + 1} tracks)",
                 )
             )
@@ -96,10 +105,16 @@ class JsonImportService:
 
         output = {
             "name": playlist_name,
-            "description": "Gerada por SongMeld",
-            "total_tracks": len(tracks),
-            "source_playlists": source_playlists,
-            "tracks": [t.to_dict() for t in tracks],
+            "tracks": [
+                {
+                    "artist": t.artist,
+                    "name": t.title,
+                    "album": t.album,
+                    "duration": int(t.duration_ms / 1000) if t.duration_ms else 0,
+                    "thumbnail": "",
+                }
+                for t in tracks
+            ],
         }
 
         return json.dumps(output, indent=2, ensure_ascii=False)

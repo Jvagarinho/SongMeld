@@ -34,6 +34,12 @@ class JsonImportService:
                     album_info = track_info.get("album", {})
                     album = album_info.get("title", "") if isinstance(album_info, dict) else str(album_info)
 
+                    thumbnail = ""
+                    if isinstance(album_info, dict):
+                        images = album_info.get("images", [])
+                        if images:
+                            thumbnail = images[0].get("url", "")
+
                     tracks.append(
                         Track(
                             artist=str(artist),
@@ -42,6 +48,7 @@ class JsonImportService:
                             platform="spotify-export",
                             duration_ms=int(track_info.get("durationMs", 0)),
                             source_playlist=playlist_name,
+                            thumbnail=thumbnail,
                         )
                     )
                 return tracks
@@ -89,6 +96,7 @@ class JsonImportService:
                     platform="json",
                     duration_ms=int(duration),
                     source_playlist=playlist_name or f"JSON Import ({i + 1} tracks)",
+                    thumbnail=item.get("thumbnail", ""),
                 )
             )
 
@@ -111,7 +119,7 @@ class JsonImportService:
                     "name": t.title,
                     "album": t.album,
                     "duration": int(t.duration_ms / 1000) if t.duration_ms else 0,
-                    "thumbnail": "",
+                    "thumbnail": t.thumbnail or "",
                 }
                 for t in tracks
             ],

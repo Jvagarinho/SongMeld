@@ -154,7 +154,7 @@ class SpotifyService:
         tracks = []
         results = sp.playlist_items(
             playlist_id,
-            fields="items.track(name,artists,album,name,duration_ms,id),next",
+            fields="items.track(name,artists,album,name,duration_ms,id,album.images),next",
             additional_types=("track",),
         )
 
@@ -172,6 +172,11 @@ class SpotifyService:
                 album_data = track_data.get("album", {})
                 album_name = album_data.get("name", "")
 
+                thumbnail = ""
+                images = album_data.get("images", [])
+                if images:
+                    thumbnail = images[0].get("url", "")
+
                 tracks.append(
                     Track(
                         artist=artist_name,
@@ -181,6 +186,7 @@ class SpotifyService:
                         duration_ms=track_data.get("duration_ms", 0),
                         spotify_id=track_data.get("id", ""),
                         source_playlist=playlist_name,
+                        thumbnail=thumbnail,
                     )
                 )
 

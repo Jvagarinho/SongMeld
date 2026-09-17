@@ -11,6 +11,7 @@ class Track:
     duration_ms: int = 0
     spotify_id: str = ""
     source_playlist: str = ""
+    thumbnail: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -25,6 +26,7 @@ class Track:
             duration_ms=data.get("duration_ms", 0),
             spotify_id=data.get("spotify_id", ""),
             source_playlist=data.get("source_playlist", ""),
+            thumbnail=data.get("thumbnail", ""),
         )
 
     @property

@@ -15,10 +15,10 @@ SCOPES = "playlist-read-private playlist-read-collaborative"
 
 
 class SpotifyService:
-    def __init__(self, client_id: str = "", client_secret: str = "", redirect_uri: str = "http://localhost:8501"):
+    def __init__(self, client_id: str = "", client_secret: str = "", redirect_uri: str = ""):
         self.client_id = client_id or os.environ.get("SPOTIFY_CLIENT_ID", "")
         self.client_secret = client_secret or os.environ.get("SPOTIFY_CLIENT_SECRET", "")
-        self.redirect_uri = redirect_uri
+        self.redirect_uri = redirect_uri or os.environ.get("SPOTIFY_REDIRECT_URI", "http://localhost:8501")
         self._sp: Optional[spotipy.Spotify] = None
         self._user_sp: Optional[spotipy.Spotify] = None
 

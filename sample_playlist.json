@@ -1,0 +1,14 @@
+{
+  "tracks": [
+    {"artist": "Queen", "title": "Bohemian Rhapsody", "album": "A Night at the Opera"},
+    {"artist": "Queen", "title": "We Will Rock You", "album": "News of the World"},
+    {"artist": "Led Zeppelin", "title": "Stairway to Heaven", "album": "Led Zeppelin IV"},
+    {"artist": "Pink Floyd", "title": "Comfortably Numb", "album": "The Wall"},
+    {"artist": "Pink Floyd", "title": "Wish You Were Here", "album": "Wish You Were Here"},
+    {"artist": "The Beatles", "title": "Let It Be", "album": "Let It Be"},
+    {"artist": "David Bowie", "title": "Heroes", "album": "Heroes"},
+    {"artist": "Nirvana", "title": "Smells Like Teen Spirit", "album": "Nevermind"},
+    {"artist": "Radiohead", "title": "Creep", "album": "Pablo Honey"},
+    {"artist": "Coldplay", "title": "Fix You", "album": "X&Y"}
+  ]
+}

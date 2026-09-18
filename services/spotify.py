@@ -35,6 +35,9 @@ class SpotifyService:
     def _get_token_path(self) -> str:
         return os.path.join(self._get_cache_dir(), "spotify_pkce_token.json")
 
+    def _get_verifier_path(self) -> str:
+        return os.path.join(self._get_cache_dir(), "spotify_pkce_verifier.txt")
+
     def _get_client_credentials(self) -> spotipy.Spotify:
         if self._sp is None:
             if not self.client_id or not self.client_secret:
@@ -58,7 +61,10 @@ class SpotifyService:
 
     def get_auth_url(self) -> str:
         verifier, challenge = self._generate_pkce_pair()
-        self._code_verifier = verifier
+
+        verifier_path = self._get_verifier_path()
+        with open(verifier_path, "w") as f:
+            f.write(verifier)
 
         params = {
             "client_id": self.client_id,
@@ -72,15 +78,27 @@ class SpotifyService:
 
     def handle_callback(self, code: str) -> bool:
         try:
+            verifier_path = self._get_verifier_path()
+            if not os.path.exists(verifier_path):
+                return False
+            with open(verifier_path, "r") as f:
+                code_verifier = f.read().strip()
+
             payload = {
                 "grant_type": "authorization_code",
                 "code": code,
                 "redirect_uri": self.redirect_uri,
                 "client_id": self.client_id,
-                "code_verifier": self._code_verifier,
+                "code_verifier": code_verifier,
             }
             response = requests.post(TOKEN_URL, data=payload)
+
             if response.status_code != 200:
+                error_log = os.path.join(self._get_cache_dir(), "spotify_error.log")
+                with open(error_log, "w") as f:
+                    f.write(f"Status: {response.status_code}\n")
+                    f.write(f"Response: {response.text}\n")
+                    f.write(f"Redirect URI: {self.redirect_uri}\n")
                 return False
 
             token_data = response.json()
@@ -92,9 +110,15 @@ class SpotifyService:
             with open(token_path, "w") as f:
                 json.dump(token_data, f)
 
+            if os.path.exists(verifier_path):
+                os.remove(verifier_path)
+
             self._create_sp_from_token(token_data)
             return True
-        except Exception:
+        except Exception as e:
+            error_log = os.path.join(self._get_cache_dir(), "spotify_error.log")
+            with open(error_log, "w") as f:
+                f.write(f"Exception: {str(e)}\n")
             return False
 
     def _create_sp_from_token(self, token_data: dict):

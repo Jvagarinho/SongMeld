@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from models.track import Track
 from services.json_import import JsonImportService
 from services.merger import PlaylistMerger, DuplicateGroup
+from services.artwork import ArtworkService
 
 st.set_page_config(
     page_title="SongMeld",
@@ -241,6 +242,30 @@ def render_merge_result():
         value="Playlist Mesclada",
         key="export_name",
     )
+
+    tracks_without_artwork = sum(1 for t in merged if not t.thumbnail)
+    if tracks_without_artwork > 0:
+        if st.button(
+            f"🖼️ Buscar Miniaturas ({tracks_without_artwork} músicas sem imagem)",
+            use_container_width=True,
+        ):
+            with st.spinner("A buscar miniaturas do iTunes..."):
+                progress = st.progress(0)
+                found = 0
+                for i, track in enumerate(merged):
+                    if not track.thumbnail:
+                        artwork = ArtworkService.get_artwork(track.artist, track.title)
+                        if artwork:
+                            track.thumbnail = artwork
+                            found += 1
+                    progress.progress((i + 1) / len(merged))
+                progress.empty()
+                st.session_state.all_tracks = [
+                    t for name, data in st.session_state.playlists.items()
+                    for t in data["tracks"]
+                ]
+                st.success(f"✅ {found} miniaturas encontradas")
+                st.rerun()
 
     if st.button("📥 Exportar JSON", type="primary", use_container_width=True):
         if not merged:

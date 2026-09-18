@@ -4,14 +4,18 @@ import json
 import hashlib
 import secrets
 import urllib.parse
+import base64
 from typing import List, Optional
 
+import requests
 import spotipy
-from spotipy.oauth2 import SpotifyClientCredentials, SpotifyOAuth, CacheFileHandler
+from spotipy.oauth2 import SpotifyClientCredentials, CacheFileHandler
 
 from models.track import Track
 
 SCOPES = "playlist-read-private playlist-read-collaborative"
+TOKEN_URL = "https://accounts.spotify.com/api/token"
+AUTH_URL = "https://accounts.spotify.com/authorize"
 
 
 class SpotifyService:
@@ -21,12 +25,15 @@ class SpotifyService:
         self.redirect_uri = redirect_uri or os.environ.get("SPOTIFY_REDIRECT_URI", "http://localhost:8501")
         self._sp: Optional[spotipy.Spotify] = None
         self._user_sp: Optional[spotipy.Spotify] = None
+        self._code_verifier = ""
 
-    def _get_cache_handler(self) -> CacheFileHandler:
+    def _get_cache_dir(self) -> str:
         cache_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".cache")
         os.makedirs(cache_dir, exist_ok=True)
-        cache_path = os.path.join(cache_dir, "spotify_token")
-        return CacheFileHandler(cache_path=cache_path)
+        return cache_dir
+
+    def _get_token_path(self) -> str:
+        return os.path.join(self._get_cache_dir(), "spotify_pkce_token.json")
 
     def _get_client_credentials(self) -> spotipy.Spotify:
         if self._sp is None:
@@ -42,75 +49,108 @@ class SpotifyService:
             self._sp = spotipy.Spotify(auth_manager=auth_manager)
         return self._sp
 
-    def _get_user_client(self) -> spotipy.Spotify:
-        if self._user_sp is None:
-            if not self.client_id or not self.client_secret:
-                raise ValueError(
-                    "Spotify Client ID e Client Secret são necessários."
-                )
-            auth_manager = SpotifyOAuth(
-                client_id=self.client_id,
-                client_secret=self.client_secret,
-                redirect_uri=self.redirect_uri,
-                scope=SCOPES,
-                cache_handler=self._get_cache_handler(),
-                open_browser=False,
-            )
-            self._user_sp = spotipy.Spotify(auth_manager=auth_manager)
-        return self._user_sp
+    @staticmethod
+    def _generate_pkce_pair() -> tuple:
+        verifier = secrets.token_urlsafe(64)[:128]
+        digest = hashlib.sha256(verifier.encode("ascii")).digest()
+        challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+        return verifier, challenge
 
     def get_auth_url(self) -> str:
-        auth_manager = SpotifyOAuth(
-            client_id=self.client_id,
-            client_secret=self.client_secret,
-            redirect_uri=self.redirect_uri,
-            scope=SCOPES,
-            cache_handler=self._get_cache_handler(),
-            open_browser=False,
-        )
-        return auth_manager.get_authorize_url()
+        verifier, challenge = self._generate_pkce_pair()
+        self._code_verifier = verifier
+
+        params = {
+            "client_id": self.client_id,
+            "response_type": "code",
+            "redirect_uri": self.redirect_uri,
+            "scope": SCOPES,
+            "code_challenge_method": "S256",
+            "code_challenge": challenge,
+        }
+        return f"{AUTH_URL}?{urllib.parse.urlencode(params)}"
 
     def handle_callback(self, code: str) -> bool:
         try:
-            auth_manager = SpotifyOAuth(
-                client_id=self.client_id,
-                client_secret=self.client_secret,
-                redirect_uri=self.redirect_uri,
-                scope=SCOPES,
-                cache_handler=self._get_cache_handler(),
-                open_browser=False,
+            payload = {
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": self.redirect_uri,
+                "client_id": self.client_id,
+                "code_verifier": self._code_verifier,
+            }
+            response = requests.post(TOKEN_URL, data=payload)
+            if response.status_code != 200:
+                return False
+
+            token_data = response.json()
+            token_data["expires_at"] = (
+                __import__("time").time() + token_data.get("expires_in", 3600)
             )
-            auth_manager.get_access_token(code, as_dict=False, check_cache=False)
-            self._user_sp = spotipy.Spotify(auth_manager=auth_manager)
+
+            token_path = self._get_token_path()
+            with open(token_path, "w") as f:
+                json.dump(token_data, f)
+
+            self._create_sp_from_token(token_data)
             return True
         except Exception:
             return False
 
-    def is_user_authenticated(self) -> bool:
+    def _create_sp_from_token(self, token_data: dict):
+        auth_manager = spotipy.oauth2.SpotifyOAuth.__new__(spotipy.oauth2.SpotifyOAuth)
+        auth_manager.access_token = token_data.get("access_token")
+        auth_manager.refresh_token = token_data.get("refresh_token")
+        auth_manager.token_info = token_data
+        auth_manager.is_token_expired = lambda: __import__("time").time() > token_data.get("expires_at", 0)
+        auth_manager.get_access_token = lambda: token_data.get("access_token")
+
+        self._user_sp = spotipy.Spotify(auth_manager=auth_manager)
+        self._user_sp._session.headers["Authorization"] = f"Bearer {token_data.get('access_token')}"
+
+    def _load_cached_token(self) -> Optional[dict]:
+        token_path = self._get_token_path()
+        if not os.path.exists(token_path):
+            return None
         try:
-            auth_manager = SpotifyOAuth(
-                client_id=self.client_id,
-                client_secret=self.client_secret,
-                redirect_uri=self.redirect_uri,
-                scope=SCOPES,
-                cache_handler=self._get_cache_handler(),
-                open_browser=False,
-            )
-            token = auth_manager.get_cached_token()
-            return token is not None and not auth_manager.is_token_expired(token)
+            with open(token_path, "r") as f:
+                token_data = json.load(f)
+            if __import__("time").time() > token_data.get("expires_at", 0):
+                if token_data.get("refresh_token"):
+                    return self._refresh_token(token_data)
+                return None
+            return token_data
         except Exception:
-            return False
+            return None
+
+    def _refresh_token(self, token_data: dict) -> Optional[dict]:
+        payload = {
+            "grant_type": "refresh_token",
+            "refresh_token": token_data["refresh_token"],
+            "client_id": self.client_id,
+        }
+        response = requests.post(TOKEN_URL, data=payload)
+        if response.status_code != 200:
+            return None
+        new_data = response.json()
+        new_data["refresh_token"] = token_data["refresh_token"]
+        new_data["expires_at"] = __import__("time").time() + new_data.get("expires_in", 3600)
+        token_path = self._get_token_path()
+        with open(token_path, "w") as f:
+            json.dump(new_data, f)
+        return new_data
+
+    def is_user_authenticated(self) -> bool:
+        token_data = self._load_cached_token()
+        if token_data:
+            self._create_sp_from_token(token_data)
+            return True
+        return False
 
     def logout(self):
-        cache_path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)),
-            ".cache",
-            "spotify_token"
-        )
-        if os.path.exists(cache_path):
-            os.remove(cache_path)
-        if os.path.exists(cache_path + "-user"):
-            os.remove(cache_path + "-user")
+        token_path = self._get_token_path()
+        if os.path.exists(token_path):
+            os.remove(token_path)
         self._user_sp = None
 
     @staticmethod
@@ -218,6 +258,15 @@ class SpotifyService:
                 break
 
         return playlists
+
+    def _get_user_client(self) -> spotipy.Spotify:
+        if self._user_sp is None:
+            if not self.client_id:
+                raise ValueError("Spotify Client ID é necessário.")
+            token_data = self._load_cached_token()
+            if token_data:
+                self._create_sp_from_token(token_data)
+        return self._user_sp
 
     def is_configured(self) -> bool:
         return bool(self.client_id and self.client_secret)

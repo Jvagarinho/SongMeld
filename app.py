@@ -9,6 +9,7 @@ import streamlit as st
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from models.track import Track
+from services.spotify import SpotifyService
 from services.json_import import JsonImportService
 from services.merger import PlaylistMerger, DuplicateGroup
 
@@ -26,6 +27,24 @@ def init_session_state():
         st.session_state.all_tracks = []
     if "merger" not in st.session_state:
         st.session_state.merger = PlaylistMerger()
+    if "spotify_service" not in st.session_state:
+        client_id = os.environ.get("SPOTIFY_CLIENT_ID", "")
+        redirect_uri = os.environ.get("SPOTIFY_REDIRECT_URI", "http://localhost:8501")
+        st.session_state.spotify_service = SpotifyService(client_id, redirect_uri=redirect_uri)
+
+
+def handle_oauth_callback():
+    query_params = st.query_params
+    code = query_params.get("code", None)
+
+    if code:
+        spotify = st.session_state.spotify_service
+        success = spotify.handle_callback(code)
+        if success:
+            st.query_params.clear()
+            st.rerun()
+        else:
+            st.error("Erro ao autenticar com Spotify. Tente novamente.")
 
 
 def render_sidebar():
@@ -33,6 +52,22 @@ def render_sidebar():
         st.markdown("## ⚙️ Configuração")
         st.markdown("---")
 
+        spotify = st.session_state.spotify_service
+
+        if spotify.is_configured():
+            st.markdown("### 👤 Conta Spotify")
+            if spotify.is_user_authenticated():
+                st.success("✅ Autenticado com Spotify")
+                if st.button("🔓 Desconectar", use_container_width=True):
+                    spotify.logout()
+                    st.rerun()
+            else:
+                if st.button("🔑 Ligar com Spotify", type="primary", use_container_width=True):
+                    auth_url = spotify.get_auth_url()
+                    st.markdown(f"[Clique aqui para autenticar]({auth_url})")
+                st.caption("Para aceder a playlists do Spotify")
+
+        st.markdown("---")
         st.markdown("### 🎯 Threshold de Duplicados")
         threshold = st.slider(
             "Sensibilidade (%)",
@@ -52,7 +87,8 @@ def render_sidebar():
         if st.session_state.playlists:
             st.markdown("**Playlists:**")
             for name, data in st.session_state.playlists.items():
-                st.write(f"📄 {name} ({len(data['tracks'])} tracks)")
+                icon = "🎵" if data.get("type") == "spotify" else "📄"
+                st.write(f"{icon} {name} ({len(data['tracks'])} tracks)")
 
         st.markdown("---")
         st.caption("SongMeld v1.0")
@@ -61,45 +97,145 @@ def render_sidebar():
 def render_add_playlist():
     st.markdown("## ➕ Adicionar Playlist")
 
-    st.markdown("### Ficheiro JSON")
-    st.caption("Importa playlists exportadas do Nuclear ou de outros players")
+    spotify = st.session_state.spotify_service
+    tabs = ["📄 JSON"]
 
-    uploaded = st.file_uploader(
-        "Carregar ficheiro JSON",
-        type=["json"],
-        key="json_upload",
-    )
-    json_name = st.text_input(
-        "Nome (opcional)",
-        placeholder="Ex: Minhas Favoritas",
-        key="json_name",
-    )
+    if spotify.is_configured():
+        tabs.insert(0, "🎵 Spotify")
 
-    if uploaded and st.button("Adicionar JSON", type="primary", key="add_json"):
-        try:
-            content = uploaded.read().decode("utf-8")
-            name = json_name or uploaded.name.replace(".json", "")
+    tab_objects = st.tabs(tabs)
 
-            if name in st.session_state.playlists:
-                counter = 2
-                base_name = name
-                while name in st.session_state.playlists:
-                    name = f"{base_name} ({counter})"
-                    counter += 1
+    tab_idx = 0
 
-            tracks = JsonImportService.import_from_file(content, name)
+    if spotify.is_configured():
+        with tab_objects[0]:
+            st.markdown("### Playlist Spotify")
 
-            st.session_state.playlists[name] = {
-                "type": "json",
-                "filename": uploaded.name,
-                "tracks": tracks,
-            }
-            update_all_tracks()
-            st.success(f"✅ {name} adicionada ({len(tracks)} tracks)")
-            st.rerun()
+            if spotify.is_user_authenticated():
+                st.success("✅ Conectado ao Spotify")
 
-        except Exception as e:
-            st.error(f"Erro: {e}")
+                user_playlists = spotify.get_user_playlists()
+                if user_playlists:
+                    playlist_options = {
+                        f"{p['name']} ({p['tracks_total']} tracks)":
+                            p for p in user_playlists
+                    }
+                    selected = st.selectbox(
+                        "Selecionar playlist",
+                        options=list(playlist_options.keys()),
+                        key="user_playlist_select",
+                    )
+
+                    if st.button("Adicionar Playlist Selecionada", type="primary", key="add_user_playlist"):
+                        if selected:
+                            playlist_data = playlist_options[selected]
+                            with st.spinner(f"A carregar {playlist_data['name']}..."):
+                                tracks = spotify.get_playlist_tracks(
+                                    playlist_data["url"],
+                                    playlist_data["name"],
+                                    use_user_auth=True,
+                                )
+
+                            name = playlist_data["name"]
+                            if name in st.session_state.playlists:
+                                counter = 2
+                                base_name = name
+                                while name in st.session_state.playlists:
+                                    name = f"{base_name} ({counter})"
+                                    counter += 1
+
+                            st.session_state.playlists[name] = {
+                                "type": "spotify",
+                                "url": playlist_data["url"],
+                                "tracks": tracks,
+                            }
+                            update_all_tracks()
+                            st.success(f"✅ {name} adicionada ({len(tracks)} tracks)")
+                            st.rerun()
+                else:
+                    st.info("Nenhuma playlist encontrada na sua conta Spotify.")
+            else:
+                st.info("Liga-te ao Spotify no sidebar para aceder às tuas playlists.")
+                url = st.text_input(
+                    "Ou cola o link de uma playlist pública",
+                    placeholder="https://open.spotify.com/playlist/...",
+                    key="spotify_url",
+                )
+                playlist_name = st.text_input(
+                    "Nome (opcional)",
+                    placeholder="Ex: Rock Classics",
+                    key="spotify_name",
+                )
+
+                if url and st.button("Adicionar por URL", type="primary", key="add_spotify_url"):
+                    try:
+                        with st.spinner("A carregar playlist do Spotify..."):
+                            tracks = spotify.get_playlist_tracks(url, playlist_name or "")
+                            if not playlist_name:
+                                info = spotify.get_playlist_info(url)
+                                playlist_name = info["name"]
+
+                        if playlist_name in st.session_state.playlists:
+                            counter = 2
+                            base_name = playlist_name
+                            while playlist_name in st.session_state.playlists:
+                                playlist_name = f"{base_name} ({counter})"
+                                counter += 1
+
+                        st.session_state.playlists[playlist_name] = {
+                            "type": "spotify",
+                            "url": url,
+                            "tracks": tracks,
+                        }
+                        update_all_tracks()
+                        st.success(f"✅ {playlist_name} adicionada ({len(tracks)} tracks)")
+                        st.rerun()
+
+                    except Exception as e:
+                        st.error(f"Erro: {e}")
+
+        tab_idx = 1
+
+    with tab_objects[tab_idx]:
+        st.markdown("### Ficheiro JSON")
+        st.caption("Importa playlists exportadas do Nuclear ou de outros players")
+
+        uploaded = st.file_uploader(
+            "Carregar ficheiro JSON",
+            type=["json"],
+            key="json_upload",
+        )
+        json_name = st.text_input(
+            "Nome (opcional)",
+            placeholder="Ex: Minhas Favoritas",
+            key="json_name",
+        )
+
+        if uploaded and st.button("Adicionar JSON", type="primary", key="add_json"):
+            try:
+                content = uploaded.read().decode("utf-8")
+                name = json_name or uploaded.name.replace(".json", "")
+
+                if name in st.session_state.playlists:
+                    counter = 2
+                    base_name = name
+                    while name in st.session_state.playlists:
+                        name = f"{base_name} ({counter})"
+                        counter += 1
+
+                tracks = JsonImportService.import_from_file(content, name)
+
+                st.session_state.playlists[name] = {
+                    "type": "json",
+                    "filename": uploaded.name,
+                    "tracks": tracks,
+                }
+                update_all_tracks()
+                st.success(f"✅ {name} adicionada ({len(tracks)} tracks)")
+                st.rerun()
+
+            except Exception as e:
+                st.error(f"Erro: {e}")
 
 
 def update_all_tracks():
@@ -116,9 +252,10 @@ def render_playlists():
     st.markdown("## 📋 Playlists Adicionadas")
 
     for name, data in list(st.session_state.playlists.items()):
+        icon = "🎵" if data.get("type") == "spotify" else "📄"
         col1, col2, col3 = st.columns([4, 2, 1])
         with col1:
-            st.markdown(f"**📄 {name}**")
+            st.markdown(f"**{icon} {name}**")
         with col2:
             st.caption(f"{len(data['tracks'])} tracks")
         with col3:
@@ -265,10 +402,11 @@ def render_merge_result():
 
 def main():
     init_session_state()
+    handle_oauth_callback()
     render_sidebar()
 
     st.markdown("# 🎵 SongMeld")
-    st.markdown("Junta playlists JSON, remove duplicatas e exporta o resultado.")
+    st.markdown("Junta playlists do Spotify e JSON, remove duplicatas e exporta o resultado.")
 
     st.markdown("---")
 

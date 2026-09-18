@@ -56,7 +56,7 @@ def render_sidebar():
                 st.write(f"📄 {name} ({len(data['tracks'])} tracks)")
 
         st.markdown("---")
-        st.caption("SongMeld v1.0")
+        st.caption("SongMeld v1.0 | Jorge Vagarinho")
 
 
 def render_add_playlist():
